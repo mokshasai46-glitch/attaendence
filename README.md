@@ -199,21 +199,31 @@ For webcam capture:
 
 ## 🚀 Deploying from GitHub
 
-This repository can be pushed to GitHub and deployed to a Python-friendly cloud host.
+### Environment variables
 
-### 1. Push to GitHub
+Set the following values before deploying or running in production:
 
-1. Create a new repo on GitHub.
-2. In the project folder, run:
-   ```powershell
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin https://github.com/<your-username>/<repo-name>.git
-   git push -u origin main
-   ```
-3. Replace `<your-username>` and `<repo-name>` with your GitHub values.
+- `SECRET_KEY` — Flask session secret key
+- `DATABASE_URL` — Database connection string (example: `sqlite:///attendance.db` or `mysql+pymysql://user:pass@host/dbname`)
+- `FLASK_DEBUG` — `false` in production
+- `PORT` — Web server port (Heroku sets this automatically)
+- `ADMIN_RESET_KEY` — Master key for password reset flows
+
+### Deploying on Heroku
+
+1. Create a Heroku app: `heroku create`
+2. Push code: `git push heroku main`
+3. Set environment variables:
+   - `heroku config:set SECRET_KEY=your-secret-key`
+   - `heroku config:set FLASK_DEBUG=false`
+   - `heroku config:set ADMIN_RESET_KEY=RESET123`
+4. Open the app: `heroku open`
+
+> Note: Heroku’s file system is ephemeral, so use a hosted database service with `DATABASE_URL` rather than relying on local `attendance.db`.
+
+### GitHub Actions CI
+
+A lightweight GitHub Actions workflow has been added to validate `app.py` syntax on each push and pull request.
 
 ### 2. Deployment support files
 

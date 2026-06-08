@@ -131,6 +131,8 @@ dmypy.json
 
 # Project specific
 attendance_*.csv
+attendance.db
+*.db
 embeddings.json
 users.json
 *.log
