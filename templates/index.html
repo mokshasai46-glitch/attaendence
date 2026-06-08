@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Face Recognition Attendance</title>
+   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Face Recognition Attendance System</h1>
+            <p>College Attendance Management</p>
+            <div style="background: rgba(255, 193, 7, 0.1); padding: 10px 15px; border-radius: 10px; margin-top: 10px; border-left: 4px solid #ffc107; display: inline-block;">
+                <small style="color: #f57c00; font-weight: 500;">📝 Not enrolled? Contact your faculty member or administrator for enrollment.</small>
+            </div>
+        </header>
+
+        <!-- Quick Actions -->
+        <div class="card">
+            <h2>🚀 Quick Actions</h2>
+            <a href="/login" target="_blank" class="btn" style="margin-right: 10px;">🔐 Faculty Login</a>
+            <a href="/view_attendance" class="btn" style="margin-right: 10px;">📊 View Attendance Records</a>
+            {% if session.role == 'admin' %}
+                <a href="/manage_users" class="btn">🛠 Manage Users</a>
+            {% endif %}
+        </div>
+
+        <!-- Attendance Form -->
+        <div class="card">
+            <h2>📸 Mark Attendance</h2>
+            <div class="form-group">
+                <label>Session ID:</label>
+                <input type="text" id="session_id" required>
+            </div>
+            <div class="form-group">
+                <label>Student ID:</label>
+                <input type="text" id="student_id" required>
+                <button id="check-enrolled-btn" class="btn" style="margin-left: 10px;">Check Enrollment</button>
+            </div>
+            <div class="form-group">
+                <div style="position: relative; display: inline-block; margin-bottom: 15px;">
+                    <video id="video" width="320" height="240" autoplay style="border: 2px solid #ccc; border-radius: 8px;"></video>
+                    <canvas id="preview-canvas" width="320" height="240" style="position: absolute; top: 0; left: 0; border-radius: 8px; cursor: pointer;"></canvas>
+                </div>
+                <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+                <div id="liveness-prompt" style="margin: 10px 0; font-weight: bold; color: #007BFF;"></div>
+                <div id="face-status" style="margin: 10px 0; padding: 10px; border-radius: 5px; background: rgba(255,255,255,0.9); display: none;">
+                    <div id="face-indicator" style="font-weight: bold; font-size: 1.1em;"></div>
+                </div>
+            </div>
+            <button id="start-capture-btn" class="btn">🔒 Start Attendance Check</button>
+            <button id="capture-btn" class="btn" style="display:none;">📷 Capture Now</button>
+            <div id="result"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/face-api.min.js"></script>
+    <script>
+        // Attendance elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const previewCanvas = document.getElementById('preview-canvas');
+        const startCaptureBtn = document.getElementById('start-capture-btn');
+        const captureBtn = document.getElementById('capture-btn');
+        const resultDiv = document.getElementById('result');
+        const livenessPrompt = document.getElementById('liveness-prompt');
+        const checkEnrolledBtn = document.getElementById('check-enrolled-btn');
+        const faceStatusDiv = document.getElementById('face-status');
+        const faceIndicatorDiv = document.getElementById('face-indicator');
+        
+        let stream = null;
+        let lastFaceLocation = null;
+        let isCapturing = false;
+        let faceDetectionInterval = null;
+        let modelsLoaded = false;
+        let isProcessing = false;
+
+        // Load face-api models
+        async function loadModels() {
+            try {
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri('/static/models'),
+                    faceapi.nets.faceLandmark68Net.loadFromUri('/static/models'),
+                    faceapi.nets.faceRecognitionNet.loadFromUri('/static/models')
+                ]);
+                modelsLoaded = true;
+                console.log('Face detection models loaded');
+            } catch (err) {
+                console.error('Error loading models:', err);
+            }
+        }
+
+        // Function to draw face bounding box with state
+        function drawFaceBox(faceLocation, state = 'white', confidence = null) {
+            const ctx = previewCanvas.getContext('2d');
+            ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            
+            if (!faceLocation) return;
+
+            // Convert face_location (top, right, bottom, left) to canvas coordinates
+            const top = faceLocation[0];
+            const right = faceLocation[1];
+            const bottom = faceLocation[2];
+            const left = faceLocation[3];
+            
+            const width = right - left;
+            const height = bottom - top;
+            
+            // Determine color based on state
+            let boxColor, statusText, statusColor;
+            switch(state) {
+                case 'white':
+                    boxColor = '#FFFFFF';
+                    statusText = '⏳ FACE DETECTED';
+                    statusColor = '#666666';
+                    break;
+                case 'yellow':
+                    boxColor = '#FFD700';
+                    statusText = '⏳ PROCESSING...';
+                    statusColor = '#FF8C00';
+                    break;
+                case 'green':
+                    boxColor = '#00CC00';
+                    statusText = '✅ MATCH';
+                    statusColor = '#28a745';
+                    break;
+                case 'red':
+                    boxColor = '#FF0000';
+                    statusText = '❌ NO MATCH';
+                    statusColor = '#dc3545';
+                    break;
+                default:
+                    boxColor = '#FFFFFF';
+                    statusText = '⏳ FACE DETECTED';
+                    statusColor = '#666666';
+            }
+            
+            // Draw box
+            const lineWidth = 3;
+            ctx.strokeStyle = boxColor;
+            ctx.lineWidth = lineWidth;
+            ctx.strokeRect(left, top, width, height);
+            
+            // Draw filled corners for better visibility
+            const cornerSize = 15;
+            ctx.fillStyle = boxColor;
+            
+            // Top-left
+            ctx.fillRect(left - 2, top - 2, cornerSize, lineWidth);
+            ctx.fillRect(left - 2, top - 2, lineWidth, cornerSize);
+            
+            // Top-right
+            ctx.fillRect(right - cornerSize + 2, top - 2, cornerSize, lineWidth);
+            ctx.fillRect(right + 2, top - 2, lineWidth, cornerSize);
+            
+            // Bottom-left
+            ctx.fillRect(left - 2, bottom + 2 - lineWidth, cornerSize, lineWidth);
+            ctx.fillRect(left - 2, bottom - cornerSize + 2, lineWidth, cornerSize);
+            
+            // Bottom-right
+            ctx.fillRect(right - cornerSize + 2, bottom + 2 - lineWidth, cornerSize, lineWidth);
+            ctx.fillRect(right + 2, bottom - cornerSize + 2, lineWidth, cornerSize);
+            
+            // Draw status label
+            faceStatusDiv.style.display = 'block';
+            faceIndicatorDiv.textContent = statusText + (confidence ? ` (${(confidence * 100).toFixed(1)}%)` : '');
+            faceIndicatorDiv.style.color = statusColor;
+        }
+
+        // Real-time face detection
+        async function detectFaceInVideo() {
+            if (!modelsLoaded || !stream || isCapturing) {
+                if (faceDetectionInterval) {
+                    faceDetectionInterval = setTimeout(detectFaceInVideo, 500);
+                }
+                return;
+            }
+
+            try {
+                const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions());
+                
+                if (detection) {
+                    // Face detected - show white box
+                    const box = detection.detection.box;
+                    drawFaceBox(
+                        [box.top, box.right, box.bottom, box.left],
+                        'white'
+                    );
+                } else {
+                    // No face detected - clear canvas
+                    const ctx = previewCanvas.getContext('2d');
+                    ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+                    faceStatusDiv.style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Face detection error:', err);
+            }
+
+            // Continue detection loop
+            if (faceDetectionInterval !== null) {
+                faceDetectionInterval = setTimeout(detectFaceInVideo, 500);
+            }
+        }
+
+        // Start real-time detection
+        function startFaceDetection() {
+            if (faceDetectionInterval !== null) return;
+            faceDetectionInterval = setTimeout(detectFaceInVideo, 500);
+        }
+
+        // Stop real-time detection
+        function stopFaceDetection() {
+            if (faceDetectionInterval !== null) {
+                clearTimeout(faceDetectionInterval);
+                faceDetectionInterval = null;
+            }
+        }
+
+        // Check enrollment status
+        checkEnrolledBtn.addEventListener('click', () => {
+            const studentId = document.getElementById('student_id').value.trim();
+            if (!studentId) {
+                resultDiv.innerHTML = '<p style="color: red;">❌ Please enter Student ID first.</p>';
+                return;
+            }
+
+            fetch(`/check_student/${studentId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.exists) {
+                        resultDiv.innerHTML = `<p style="color: green;">✓ Student ID "${studentId}" is enrolled in the system.</p>`;
+                    } else {
+                        resultDiv.innerHTML = `<p style="color: orange;">⚠️ Student ID "${studentId}" is not enrolled. Please contact your faculty member for enrollment.</p>`;
+                    }
+                })
+                .catch(err => {
+                    console.error('Error checking enrollment:', err);
+                    resultDiv.innerHTML = '<p style="color: red;">❌ Error checking enrollment status.</p>';
+                });
+        });
+        
+        // Initialize
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(mediaStream => {
+                stream = mediaStream;
+                video.srcObject = stream;
+                
+                // Wait for video to load then initialize
+                video.onloadedmetadata = () => {
+                    startFaceDetection();
+                };
+            })
+            .catch(err => {
+                console.error('Error accessing webcam:', err);
+                resultDiv.innerHTML = '<p style="color: red;">❌ Error accessing webcam. Please allow camera access.</p>';
+            });
+
+        // Load models on page load
+        window.addEventListener('load', loadModels);
+
+        // Start attendance check with liveness detection
+        startCaptureBtn.addEventListener('click', () => {
+            const sessionId = document.getElementById('session_id').value;
+            const studentId = document.getElementById('student_id').value;
+            if (!sessionId) {
+                resultDiv.innerHTML = '<p style="color: red;">❌ Please enter Session ID.</p>';
+                return;
+            }
+            if (!studentId) {
+                resultDiv.innerHTML = '<p style="color: red;">❌ Please enter Student ID.</p>';
+                return;
+            }
+
+            // Clear previous results
+            resultDiv.innerHTML = '';
+            faceStatusDiv.style.display = 'none';
+            previewCanvas.getContext('2d').clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+            // Start liveness detection
+            const actions = ['smile', 'blink your eyes', 'look left and right', 'nod your head'];
+            const randomAction = actions[Math.floor(Math.random() * actions.length)];
+
+            livenessPrompt.textContent = `🔒 Security Check: Please ${randomAction} for the camera, then click "Capture Now"`;
+            startCaptureBtn.style.display = 'none';
+            captureBtn.style.display = 'inline-block';
+
+            // Auto-hide prompt after 10 seconds
+            setTimeout(() => {
+                if (livenessPrompt.textContent.includes('Security Check')) {
+                    livenessPrompt.textContent = '';
+                    startCaptureBtn.style.display = 'inline-block';
+                    captureBtn.style.display = 'none';
+                }
+            }, 10000);
+        });
+
+        // Capture and send image
+        captureBtn.addEventListener('click', () => {
+            if (isCapturing) return;
+            isCapturing = true;
+            stopFaceDetection();
+            
+            const sessionId = document.getElementById('session_id').value;
+            const studentId = document.getElementById('student_id').value;
+
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, 320, 240);
+            canvas.toBlob(blob => {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('student_id', studentId);
+                formData.append('image', blob, 'capture.jpg');
+
+                // Show processing message - yellow box
+                resultDiv.innerHTML = '<p style="color: blue;">🔍 Processing... Please wait.</p>';
+                
+                // Draw yellow box while processing
+                const ctx = previewCanvas.getContext('2d');
+                const videoWidth = 320;
+                const videoHeight = 240;
+                drawFaceBox([60, 260, 180, 60], 'yellow');
+
+                fetch('/attendance', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Draw final result box
+                    if (data.face_location) {
+                        // Determine color based on match
+                        const resultState = data.match ? 'green' : 'red';
+                        drawFaceBox(data.face_location, resultState, data.confidence || null);
+                    }
+                    
+                    // Reset UI
+                    livenessPrompt.textContent = '';
+                    startCaptureBtn.style.display = 'inline-block';
+                    captureBtn.style.display = 'none';
+                    isCapturing = false;
+
+                    if (data.status === 'logged') {
+                        resultDiv.innerHTML = `<p style="color: green;">✓ Attendance marked for Student ID: ${data.student_id} (Confidence: ${Math.round(data.confidence * 100)}%)</p>`;
+                    } else if (data.status === 'not_enrolled') {
+                        resultDiv.innerHTML = `<p style="color: orange;">⚠️ ${data.message}</p>`;
+                    } else if (data.status === 'not_recognized') {
+                        resultDiv.innerHTML = `<p style="color: red;">❌ ${data.message}</p>`;
+                    } else if (data.status === 'security_failed') {
+                        resultDiv.innerHTML = `<p style="color: red;">🚫 ${data.message}</p>`;
+                    } else if (data.status === 'low_confidence') {
+                        resultDiv.innerHTML = `<p style="color: orange;">⚠️ ${data.message}</p>`;
+                    } else {
+                        resultDiv.innerHTML = `<p style="color: red;">❌ Error: ${data.error}</p>`;
+                    }
+                    
+                    // Resume face detection after delay
+                    setTimeout(() => {
+                        startFaceDetection();
+                    }, 3000);
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    resultDiv.innerHTML = '<p style="color: red;">❌ Error marking attendance. Please try again.</p>';
+                    // Reset UI on error
+                    livenessPrompt.textContent = '';
+                    startCaptureBtn.style.display = 'inline-block';
+                    captureBtn.style.display = 'none';
+                    isCapturing = false;
+                    
+                    // Resume face detection
+                    startFaceDetection();
+                });
+            }, 'image/jpeg');
+        });
+    </script>
+</body>
+</html>
