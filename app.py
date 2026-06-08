@@ -152,7 +152,7 @@ def save_embeddings(data):
         session = SessionLocal()
         try:
             for sid, info in data.items():
-                rec = session.query(Embedding).get(sid)
+                rec = session.get(Embedding, sid)
                 if not rec:
                     rec = Embedding(student_id=sid)
                 rec.embeddings = info.get("embeddings")
@@ -203,7 +203,7 @@ def save_users(data):
         session = SessionLocal()
         try:
             for uname, info in data.items():
-                user = session.query(User).get(uname)
+                user = session.get(User, uname)
                 if not user:
                     user = User(username=uname)
                 user.password = info.get("password")
