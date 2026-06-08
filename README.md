@@ -237,17 +237,19 @@ This repo now includes:
 #### Render
 
 1. Create a new Web Service and connect your GitHub repo.
-2. Set the build command:
+2. Use the provided `render.yaml` file to pin Python and build settings.
+3. If you configure the service manually, set the build command to:
    ```bash
-   pip install -r requirements.txt
+   python -m pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
    ```
-3. Set the start command:
+4. Set the start command:
    ```bash
    gunicorn app:app --bind 0.0.0.0:$PORT
    ```
-4. Set environment variables:
+5. Set environment variables:
    - `SECRET_KEY`
    - `DATABASE_URL` (optional)
+   - `ADMIN_RESET_KEY` (optional)
 
 #### Heroku
 
