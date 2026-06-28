@@ -1,62 +1,78 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Manage Users - Face Recognition Attendance</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Accounts Console - Admin</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>👥 User Management</h1>
-            <p>Only administrators may add or modify accounts.</p>
+            <h1>User Account Management</h1>
+            <p>Admin settings control console</p>
         </header>
 
         <div class="card">
-            <h2>Add / Update User</h2>
+            <h2>➕ Add or Modify Account Node</h2>
             <form action="/manage_users" method="post">
                 <div class="form-group">
-                    <label>Username:</label>
-                    <input type="text" name="username" required>
+                    <label for="username">Username:</label>
+                    <input type="text" id="username" name="username" placeholder="Enter username..." required>
                 </div>
+                
                 <div class="form-group">
-                    <label>Password:</label>
-                    <input type="password" id="new_password" name="password" required>
+                    <label for="password">Password:</label>
+                    <input type="password" id="password" name="password" placeholder="Enter password..." required>
                 </div>
-                <div class="form-group">
-                    <input type="checkbox" id="show_password_toggle"> <label for="show_password_toggle">Show password</label>
+                
+                <div class="form-group" style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 25px;">
+                    <input type="checkbox" id="show_password_toggle">
+                    <label for="show_password_toggle" style="margin-bottom: 0; cursor: pointer; user-select: none;">Show password</label>
                 </div>
+                
                 <div class="form-group">
-                    <label>Role:</label>
-                    <select name="role" required>
-                        <option value="faculty">faculty</option>
-                        <option value="admin">admin</option>
+                    <label for="role">Assigned Access Level:</label>
+                    <select id="role" name="role" required>
+                        <option value="faculty">Faculty Member</option>
+                        <option value="admin">Administrator Node</option>
                     </select>
                 </div>
+                
                 <div class="form-group">
-                    <label>Name (optional):</label>
-                    <input type="text" name="name">
+                    <label for="name">Operator Display Name (Optional):</label>
+                    <input type="text" id="name" name="name" placeholder="Enter operator name...">
                 </div>
-                <button type="submit" class="btn">➕ Add / Update</button>
+                
+                <button type="submit" class="btn" style="width: 100%; margin: 15px 0 0 0;">➕ Commit Settings</button>
             </form>
         </div>
 
-        <div class="card" style="margin-top:20px;">
-            <h2>Existing Accounts</h2>
-            <ul>
+        <div class="card">
+            <h2>👥 Registered User Identities</h2>
+            <ul class="user-list">
                 {% for uname, info in users.items() %}
-                <li><strong>{{ uname }}</strong> ({{ info.role }}) - {{ info.name or 'no name' }}</li>
+                <li>
+                    <div>
+                        <strong>{{ uname }}</strong> 
+                        <span style="color: #64748b; margin-left: 10px; font-size: 0.95rem;">({{ info.name or 'Unnamed Operator' }})</span>
+                    </div>
+                    <span class="{% if info.role == 'admin' %}status-danger{% else %}status-info{% endif %}" style="font-weight: 700; font-size: 0.95rem; text-transform: uppercase;">
+                        {{ info.role }}
+                    </span>
+                </li>
                 {% endfor %}
             </ul>
         </div>
 
-        <div class="card">
-            <a href="/" class="btn">🏠 Back to Attendance</a>
+        <div class="card" style="text-align: center;">
+            <a href="/" class="btn btn-secondary" style="width: 100%; margin: 0;">🏠 Return to Main Portal</a>
         </div>
     </div>
 
     <script>
         document.getElementById('show_password_toggle').addEventListener('change', function() {
-            var pwd = document.getElementById('new_password');
+            const pwd = document.getElementById('password');
             pwd.type = this.checked ? 'text' : 'password';
         });
     </script>
