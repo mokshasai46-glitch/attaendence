@@ -340,6 +340,33 @@ def log_attendance(session_id, student_id, status, confidence, location=None, ph
             session.close()
 
 
+def is_attendance_logged(session_id, student_id):
+    if DATABASE_URL:
+        session = SessionLocal()
+        try:
+            exists = session.query(Attendance).filter(
+                Attendance.session_id == session_id,
+                Attendance.student_id == student_id
+            ).first() is not None
+            return exists
+        finally:
+            session.close()
+    else:
+        import glob
+        for file in glob.glob("attendance_*.csv"):
+            if os.path.exists(file):
+                try:
+                    with open(file, "r") as f:
+                        reader = csv.reader(f)
+                        next(reader, None)
+                        for row in reader:
+                            if len(row) >= 3 and row[1] == session_id and row[2] == student_id:
+                                return True
+                except Exception as e:
+                    print(f"Error checking CSV file {file}: {e}")
+        return False
+
+
 # Initialize default users if file doesn't exist
 def init_users():
     users = load_users()
@@ -691,6 +718,16 @@ def attendance():
             "match": False
         })
 
+    # Check if attendance is already logged
+    if is_attendance_logged(session_id, student_id):
+        return jsonify({
+            "status": "already_logged",
+            "student_id": student_id,
+            "face_location": list(face_location),
+            "match": True,
+            "message": "Attendance already logged for this session."
+        })
+
     student_data = data[student_id]
     embeddings = student_data['embeddings']
 
@@ -782,6 +819,24 @@ def attendance_realtime():
             return jsonify({"error": "Session ID and Student ID are required"}), 400
             
         confidence = float(confidence_str) if confidence_str else 1.0
+
+        if is_attendance_logged(session_id, student_id):
+            users = load_users()
+            student_name = student_id
+            if student_id in users:
+                student_name = users[student_id].get("name", student_id)
+            else:
+                data = load_embeddings()
+                if student_id in data and "name" in data[student_id]:
+                    student_name = data[student_id]["name"]
+            return jsonify({
+                "status": "already_logged",
+                "student_id": student_id,
+                "student_name": student_name,
+                "confidence": confidence,
+                "photo_path": None,
+                "message": "Attendance already logged for this session."
+            })
         
         # Save photo
         photo_web_path = None

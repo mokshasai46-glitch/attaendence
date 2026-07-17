@@ -408,6 +408,8 @@
 
                     if (data.status === 'logged') {
                         resultDiv.innerHTML = `<p class="status-success">✓ Attendance logged successfully. Student: ${data.student_id} (Confidence: ${Math.round(data.confidence * 100)}%)</p>`;
+                    } else if (data.status === 'already_logged') {
+                        resultDiv.innerHTML = `<p class="status-warning">⚠️ Attendance already marked for student ${data.student_id} in this session.</p>`;
                     } else if (data.status === 'not_enrolled') {
                         resultDiv.innerHTML = `<p class="status-warning">⚠️ Profile mapping failure: ${data.message}</p>`;
                     } else if (data.status === 'not_recognized') {
