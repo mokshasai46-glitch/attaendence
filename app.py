@@ -963,6 +963,12 @@ def live_dashboard_page():
     return render_template("live_dashboard.html", course=course, year=year, section=section, session_id=session_id)
 
 
+# Auto-initialize default users (admin and faculty) on application startup
+try:
+    init_users()
+except Exception as e:
+    print(f"Warning: Failed to auto-initialize default users: {e}")
+
 if __name__ == "__main__":
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
     host = os.environ.get("HOST", "0.0.0.0")
