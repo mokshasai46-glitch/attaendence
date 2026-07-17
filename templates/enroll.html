@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Student Enrollment - Biometrics Terminal</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='js/face-api.js') }}" onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js';"></script>
 </head>
 <body>
     <div class="container">
@@ -107,70 +108,97 @@
 
         let stream = null;
         let capturedImages = [];
+        let capturedDescriptors = [];
         let currentCapture = 0;
         const totalCaptures = 3;
         let faceAnalysisInterval = null;
         let isAnalyzing = false;
+        let modelsLoaded = false;
 
-        function analyzeFace() {
-            if (isAnalyzing || !stream) return;
+        // Initialize face-api models on load
+        async function loadModels() {
+            try {
+                // Try local first
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri('/static/models'),
+                    faceapi.nets.faceLandmark68Net.loadFromUri('/static/models'),
+                    faceapi.nets.faceRecognitionNet.loadFromUri('/static/models')
+                ]);
+                modelsLoaded = true;
+                console.log("Enrollment face-api models loaded locally");
+                enrollResultDiv.innerHTML = '<p class="status-success">✓ Face recognition models loaded. Ready to enroll.</p>';
+                accessWebcam();
+            } catch (localErr) {
+                console.warn("Local model loading failed, trying CDN...", localErr);
+                try {
+                    const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+                    await Promise.all([
+                        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                    ]);
+                    modelsLoaded = true;
+                    console.log("Enrollment face-api models loaded from CDN");
+                    enrollResultDiv.innerHTML = '<p class="status-success">✓ Face recognition models loaded from CDN. Ready to enroll.</p>';
+                    accessWebcam();
+                } catch (cdnErr) {
+                    console.error("All model loading attempts failed:", cdnErr);
+                    enrollResultDiv.innerHTML = '<p class="status-danger">❌ Error loading face recognition models from server/CDN. Check connection.</p>';
+                }
+            }
+        }
+
+        async function analyzeFace() {
+            if (isAnalyzing || !stream || !modelsLoaded) return;
             isAnalyzing = true;
             
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 320;
-            canvas.height = 240;
-            context.drawImage(enrollVideo, 0, 0, 320, 240);
-            
-            canvas.toBlob(blob => {
-                const formData = new FormData();
-                formData.append('image', blob, 'face.jpg');
+            try {
+                const detection = await faceapi.detectSingleFace(enrollVideo, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+                    .withFaceLandmarks();
                 
-                fetch('/analyze_face', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.detected) {
-                        const confidence = (data.confidence * 100).toFixed(1);
-                        confidenceDiv.textContent = `Face Confidence: ${confidence}%`;
-                        confidenceBar.style.width = `${confidence}%`;
-                        
-                        if (confidence >= 70) {
-                            confidenceDiv.className = 'status-success';
-                            confidenceBar.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
-                            qualityDiv.textContent = '✅ Face detected clearly - Ready to capture';
-                            qualityDiv.className = 'status-success';
-                        } else if (confidence >= 50) {
-                            confidenceDiv.className = 'status-warning';
-                            confidenceBar.style.background = '#d97706';
-                            qualityDiv.textContent = '⚠️ Position your face details more clearly';
-                            qualityDiv.className = 'status-warning';
-                        } else {
-                            confidenceDiv.className = 'status-danger';
-                            confidenceBar.style.background = '#dc2626';
-                            qualityDiv.textContent = '❌ Face details low - Adjust position or illumination';
-                            qualityDiv.className = 'status-danger';
-                        }
+                if (detection) {
+                    const score = detection.detection.score;
+                    const confidence = (score * 100).toFixed(1);
+                    confidenceDiv.textContent = `Face Confidence: ${confidence}%`;
+                    confidenceBar.style.width = `${confidence}%`;
+                    
+                    if (score >= 0.7) {
+                        confidenceDiv.className = 'status-success';
+                        confidenceBar.style.background = 'linear-gradient(90deg, #667eea, #764ba2)';
+                        qualityDiv.textContent = '✅ Face detected clearly - Ready to capture';
+                        qualityDiv.className = 'status-success';
+                    } else if (score >= 0.5) {
+                        confidenceDiv.className = 'status-warning';
+                        confidenceBar.style.background = '#d97706';
+                        qualityDiv.textContent = '⚠️ Position your face details more clearly';
+                        qualityDiv.className = 'status-warning';
                     } else {
-                        confidenceDiv.textContent = 'Face Confidence: No face signal';
                         confidenceDiv.className = 'status-danger';
-                        confidenceBar.style.width = '0%';
-                        qualityDiv.textContent = 'Position your face clearly in the frame';
+                        confidenceBar.style.background = '#dc2626';
+                        qualityDiv.textContent = '❌ Face details low - Adjust position or illumination';
                         qualityDiv.className = 'status-danger';
                     }
-                })
-                .catch(err => {
-                    console.error('Face analysis error:', err);
-                })
-                .finally(() => {
-                    isAnalyzing = false;
-                });
-            }, 'image/jpeg');
+                } else {
+                    confidenceDiv.textContent = 'Face Confidence: No face signal';
+                    confidenceDiv.className = 'status-danger';
+                    confidenceBar.style.width = '0%';
+                    qualityDiv.textContent = 'Position your face clearly in the frame';
+                    qualityDiv.className = 'status-danger';
+                }
+            } catch (err) {
+                console.error('Face analysis error:', err);
+            } finally {
+                isAnalyzing = false;
+            }
         }
 
         function accessWebcam() {
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                enrollResultDiv.innerHTML = '<p class="status-danger">🚫 Webcam Blocked: Secure Context required (HTTPS or localhost). Access at http://127.0.0.1:5000/ or configure SSL.</p>';
+                startEnrollBtn.disabled = true;
+                return;
+            }
+
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
             }
@@ -181,6 +209,10 @@
                     height: { ideal: 480 },
                     facingMode: 'user'
                 } 
+            })
+            .catch(webcamErr => {
+                console.warn("Retrying webcam with default constraints due to: ", webcamErr);
+                return navigator.mediaDevices.getUserMedia({ video: true });
             })
             .then(mediaStream => {
                 stream = mediaStream;
@@ -210,7 +242,8 @@
             });
         }
 
-        accessWebcam();
+        // Call loadModels on page load instead of immediate accessWebcam
+        window.addEventListener('load', loadModels);
 
         startEnrollBtn.addEventListener('click', () => {
             const studentId = document.getElementById('enroll_student_id').value.trim();
@@ -232,6 +265,7 @@
 
                     enrollResultDiv.innerHTML = '';
                     capturedImages = [];
+                    capturedDescriptors = [];
                     currentCapture = 0;
 
                     if (faceAnalysisInterval) {
@@ -251,94 +285,111 @@
                 });
         });
 
-        captureEnrollBtn.addEventListener('click', () => {
-            const confidenceText = confidenceDiv.textContent;
-            const confidenceMatch = confidenceText.match(/(\d+\.?\d*)%/);
-            
-            if (confidenceMatch) {
-                const confidence = parseFloat(confidenceMatch[1]);
-                if (confidence < 50) {
-                    enrollResultDiv.innerHTML = '<p class="status-warning">⚠️ Face confidence too low. Adjust lighting and position.</p>';
+        captureEnrollBtn.addEventListener('click', async () => {
+            if (!modelsLoaded || !stream) return;
+
+            enrollResultDiv.innerHTML = '<p class="status-info">🔍 Analyzing face vectors... Please hold still.</p>';
+
+            try {
+                const detection = await faceapi.detectSingleFace(enrollVideo, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+                    .withFaceLandmarks()
+                    .withFaceDescriptor();
+
+                if (!detection) {
+                    enrollResultDiv.innerHTML = '<p class="status-warning">⚠️ No face detected. Adjust lighting/position and try again.</p>';
                     return;
                 }
+
+                const context = enrollCanvas.getContext('2d');
+                context.drawImage(enrollVideo, 0, 0, 320, 240);
+                
+                enrollCanvas.toBlob(blob => {
+                    capturedImages.push(blob);
+                    capturedDescriptors.push(Array.from(detection.descriptor));
+                    currentCapture++;
+
+                    if (currentCapture < totalCaptures) {
+                        const prompts = [
+                            '📸 Turn your head slightly to the left',
+                            '📸 Turn your head slightly to the right',
+                            '📸 Smile or change expression slightly'
+                        ];
+                        enrollPrompt.textContent = prompts[currentCapture - 1] || '📸 Keep still';
+                        captureProgress.textContent = `Photo ${currentCapture + 1}/${totalCaptures}`;
+                        nextCaptureBtn.style.display = 'inline-block';
+                        captureEnrollBtn.style.display = 'none';
+                        enrollResultDiv.innerHTML = `<p class="status-success">✓ Photo ${currentCapture} captured successfully!</p>`;
+                    } else {
+                        submitEnrollment();
+                    }
+                }, 'image/jpeg');
+
+            } catch (err) {
+                console.error("Capture analysis error:", err);
+                enrollResultDiv.innerHTML = `<p class="status-danger">❌ Capture failed: ${err.message}</p>`;
             }
-            
-            const context = enrollCanvas.getContext('2d');
-            context.drawImage(enrollVideo, 0, 0, 320, 240);
-            
-            enrollCanvas.toBlob(blob => {
-                capturedImages.push(blob);
-                currentCapture++;
-
-                if (currentCapture < totalCaptures) {
-                    const prompts = [
-                        '📸 Turn your head slightly to the left',
-                        '📸 Turn your head slightly to the right',
-                        '📸 Smile or change expression slightly'
-                    ];
-                    enrollPrompt.textContent = prompts[currentCapture - 1] || '📸 Keep still';
-                    captureProgress.textContent = `Photo ${currentCapture + 1}/${totalCaptures}`;
-                    nextCaptureBtn.style.display = 'inline-block';
-                    captureEnrollBtn.style.display = 'none';
-                } else {
-                    const studentId = document.getElementById('enroll_student_id').value.trim();
-                    const year = document.getElementById('enroll_year').value.trim();
-                    const section = document.getElementById('enroll_section').value.trim();
-                    const course = document.getElementById('enroll_course').value.trim();
-
-                    const formData = new FormData();
-                    formData.append('student_id', studentId);
-                    formData.append('year', year);
-                    formData.append('section', section);
-                    formData.append('course', course);
-                    
-                    capturedImages.forEach((blob, index) => {
-                        formData.append('image', blob, `enroll${index + 1}.jpg`);
-                    });
-
-                    enrollResultDiv.innerHTML = '<p class="status-info">🔍 Storing vectors... Please wait.</p>';
-
-                    fetch('/enroll', {
-                        method: 'POST',
-                        body: formData
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        enrollPrompt.style.display = 'none';
-                        enrollPrompt.textContent = '';
-                        captureProgress.textContent = '';
-                        startEnrollBtn.style.display = 'inline-block';
-                        captureEnrollBtn.style.display = 'none';
-                        nextCaptureBtn.style.display = 'none';
-
-                        if (data.status === 'enrolled') {
-                            enrollResultDiv.innerHTML = `<p class="status-success">✓ Student "${data.student_id}" enrolled successfully!</p>`;
-                            document.getElementById('enroll_student_id').value = '';
-                            document.getElementById('enroll_year').value = '';
-                            document.getElementById('enroll_section').value = '';
-                            document.getElementById('enroll_course').value = '';
-                            
-                            faceAnalysisInterval = setInterval(analyzeFace, 1000);
-                        } else {
-                            enrollResultDiv.innerHTML = `<p class="status-danger">❌ Enrollment error: ${data.error}</p>`;
-                            faceAnalysisInterval = setInterval(analyzeFace, 1000);
-                        }
-                    })
-                    .catch(err => {
-                        console.error('Error:', err);
-                        enrollResultDiv.innerHTML = '<p class="status-danger">❌ Network submission timed out.</p>';
-                        enrollPrompt.style.display = 'none';
-                        enrollPrompt.textContent = '';
-                        captureProgress.textContent = '';
-                        startEnrollBtn.style.display = 'inline-block';
-                        captureEnrollBtn.style.display = 'none';
-                        nextCaptureBtn.style.display = 'none';
-                        
-                        faceAnalysisInterval = setInterval(analyzeFace, 1000);
-                    });
-                }
-            }, 'image/jpeg');
         });
+
+        function submitEnrollment() {
+            const studentId = document.getElementById('enroll_student_id').value.trim();
+            const year = document.getElementById('enroll_year').value.trim();
+            const section = document.getElementById('enroll_section').value.trim();
+            const course = document.getElementById('enroll_course').value.trim();
+
+            const formData = new FormData();
+            formData.append('student_id', studentId);
+            formData.append('year', year);
+            formData.append('section', section);
+            formData.append('course', course);
+            
+            // Send client-side computed embeddings as JSON string
+            formData.append('embeddings', JSON.stringify(capturedDescriptors));
+            
+            capturedImages.forEach((blob, index) => {
+                formData.append('image', blob, `enroll${index + 1}.jpg`);
+            });
+
+            enrollResultDiv.innerHTML = '<p class="status-info">🔍 Storing vectors... Please wait.</p>';
+
+            fetch('/enroll', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                enrollPrompt.style.display = 'none';
+                enrollPrompt.textContent = '';
+                captureProgress.textContent = '';
+                startEnrollBtn.style.display = 'inline-block';
+                captureEnrollBtn.style.display = 'none';
+                nextCaptureBtn.style.display = 'none';
+
+                if (data.status === 'enrolled') {
+                    enrollResultDiv.innerHTML = `<p class="status-success">✓ Student "${data.student_id}" enrolled successfully!</p>`;
+                    document.getElementById('enroll_student_id').value = '';
+                    document.getElementById('enroll_year').value = '';
+                    document.getElementById('enroll_section').value = '';
+                    document.getElementById('enroll_course').value = '';
+                    
+                    faceAnalysisInterval = setInterval(analyzeFace, 1000);
+                } else {
+                    enrollResultDiv.innerHTML = `<p class="status-danger">❌ Enrollment error: ${data.error}</p>`;
+                    faceAnalysisInterval = setInterval(analyzeFace, 1000);
+                }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                enrollResultDiv.innerHTML = '<p class="status-danger">❌ Network submission timed out.</p>';
+                enrollPrompt.style.display = 'none';
+                enrollPrompt.textContent = '';
+                captureProgress.textContent = '';
+                startEnrollBtn.style.display = 'inline-block';
+                captureEnrollBtn.style.display = 'none';
+                nextCaptureBtn.style.display = 'none';
+                
+                faceAnalysisInterval = setInterval(analyzeFace, 1000);
+            });
+        }
 
         nextCaptureBtn.addEventListener('click', () => {
             nextCaptureBtn.style.display = 'none';

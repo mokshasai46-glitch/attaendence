@@ -7,5 +7,6 @@ requests==2.31.0
 # database support
 SQLAlchemy>=2.0
 pymysql
+psycopg2-binary>=2.9
 # production WSGI server
 gunicorn>=20.1.0

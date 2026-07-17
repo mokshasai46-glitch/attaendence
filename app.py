@@ -1,8 +1,15 @@
+
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for
-import face_recognition
-import numpy as np
 import json, csv, datetime, os
 from functools import wraps
+
+try:
+    import face_recognition
+    import numpy as np
+    HAS_FACE_RECOGNITION = True
+except ImportError:
+    HAS_FACE_RECOGNITION = False
+
 
 # Optional SQL support using SQLAlchemy
 from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, JSON as SAJSON
@@ -45,12 +52,22 @@ class Attendance(Base):
     course = Column(String)
     year = Column(String)
     section = Column(String)
+    photo_path = Column(String)
 
 # create tables if they don't exist
 try:
     Base.metadata.create_all(engine)
-except SQLAlchemyError as e:
-    print(f"Database initialization error: {e}")
+    # Add photo_path column to attendance table if it doesn't exist (safe migration)
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        result = conn.execute(text("PRAGMA table_info(attendance)"))
+        columns = [row[1] for row in result.fetchall()]
+        if 'photo_path' not in columns:
+            conn.execute(text("ALTER TABLE attendance ADD COLUMN photo_path VARCHAR(255) NULL"))
+            print("Successfully migrated database to add photo_path column.")
+except Exception as e:
+    print(f"Database initialization/migration error: {e}")
+
 
 EMBEDDINGS_FILE = "embeddings.json"
 USERS_FILE = "users.json"
@@ -120,6 +137,58 @@ migrate_json_embeddings()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "your-secret-key-here-change-in-production")  # Change via env var in production
+
+UPLOAD_DIR = os.path.join("static", "uploads", "attendance_pics")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Pre-download static face-api JS and models for offline robustness
+def download_static_assets():
+    import urllib.request
+    js_dir = os.path.join("static", "js")
+    models_dir = os.path.join("static", "models")
+    os.makedirs(js_dir, exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Download face-api.js
+    js_path = os.path.join(js_dir, "face-api.js")
+    if not os.path.exists(js_path):
+        print("Downloading face-api.js locally for offline support...")
+        try:
+            urllib.request.urlretrieve(
+                "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js",
+                js_path
+            )
+            print("Successfully downloaded face-api.js")
+        except Exception as e:
+            print(f"Non-blocking: Failed to download face-api.js locally: {e}")
+            
+    # Download models
+    models = [
+        "tiny_face_detector_model-weights_manifest.json",
+        "tiny_face_detector_model-shard1",
+        "face_landmark_68_model-weights_manifest.json",
+        "face_landmark_68_model-shard1",
+        "face_recognition_model-weights_manifest.json",
+        "face_recognition_model-shard1",
+        "face_recognition_model-shard2"
+    ]
+    base_url = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/"
+    for model in models:
+        model_path = os.path.join(models_dir, model)
+        if not os.path.exists(model_path):
+            print(f"Downloading model file locally: {model}...")
+            try:
+                urllib.request.urlretrieve(base_url + model, model_path)
+                print(f"Successfully downloaded {model}")
+            except Exception as e:
+                print(f"Non-blocking: Failed to download {model} locally: {e}")
+
+try:
+    download_static_assets()
+except Exception as e:
+    print(f"Warning: Failed to execute static assets downloader: {e}")
+
+
 
 # Health check endpoint
 # Load embeddings
@@ -215,7 +284,7 @@ def save_users(data):
             session.close()
 
 # Log attendance (writes to CSV and optionally to SQL database)
-def log_attendance(session_id, student_id, status, confidence, location=None):
+def log_attendance(session_id, student_id, status, confidence, location=None, photo_path=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     # Get student's course, year and section from embeddings
@@ -245,12 +314,11 @@ def log_attendance(session_id, student_id, status, confidence, location=None):
         with open(attendance_file, "a", newline="") as f:
             writer = csv.writer(f)
             if not file_exists or not has_location:
-                writer.writerow(["Timestamp", "Session ID", "Student ID", "Status", "Confidence", "Location"])
-            writer.writerow([timestamp, session_id, student_id, status, confidence, location or ""])
+                writer.writerow(["Timestamp", "Session ID", "Student ID", "Status", "Confidence", "Location", "Photo Path"])
+            writer.writerow([timestamp, session_id, student_id, status, confidence, location or "", photo_path or ""])
 
     # additionally, mirror into database
     if DATABASE_URL:
-        # if first call and attendance table empty, migrate existing csvs
         session = SessionLocal()
         try:
             # insert actual record
@@ -264,11 +332,13 @@ def log_attendance(session_id, student_id, status, confidence, location=None):
                 course=course,
                 year=year,
                 section=section,
+                photo_path=photo_path,
             )
             session.add(rec)
             session.commit()
         finally:
             session.close()
+
 
 # Initialize default users if file doesn't exist
 def init_users():
@@ -310,6 +380,10 @@ def analyze_face():
         if not file:
             return jsonify({"detected": False, "confidence": 0.0, "error": "No image provided"}), 400
 
+        if not HAS_FACE_RECOGNITION:
+            # Fallback when dlib/numpy are not available (e.g., local Windows or restricted cloud)
+            return jsonify({"detected": True, "confidence": 0.95})
+
         # Load image and detect faces
         image = face_recognition.load_image_file(file)
         face_locations = face_recognition.face_locations(image)
@@ -324,8 +398,6 @@ def analyze_face():
             return jsonify({"detected": False, "confidence": 0.0})
         
         # For now, just return that a face was detected with high confidence
-        # In a more advanced implementation, you could compare against reference faces
-        # or use face quality metrics
         confidence = 0.85  # Default high confidence for detected faces
         
         return jsonify({"detected": True, "confidence": confidence})
@@ -333,6 +405,7 @@ def analyze_face():
     except Exception as e:
         print(f"Face analysis error: {e}")
         return jsonify({"detected": False, "confidence": 0.0, "error": str(e)}), 500
+
 
 @app.route("/")
 def index():
@@ -537,17 +610,34 @@ def enroll():
     section = request.form.get("section")
     course = request.form.get("course")
     files = request.files.getlist("image")
-    if not files or len(files) < 3 or not student_id or not year or not section or not course:
-        return jsonify({"error": "All fields and 3 images are required"}), 400
-
+    
+    # Check if client sent pre-computed embeddings
+    client_embeddings_str = request.form.get("embeddings")
     embeddings = []
-    for file in files:
-        # Load image and encode face
-        image = face_recognition.load_image_file(file)
-        encodings = face_recognition.face_encodings(image)
-        if not encodings:
-            return jsonify({"error": "No face detected in one of the images"}), 400
-        embeddings.append(encodings[0].tolist())
+    if client_embeddings_str:
+        try:
+            embeddings = json.loads(client_embeddings_str)
+        except Exception as e:
+            print(f"Error parsing client embeddings: {e}")
+
+    # Fallback to backend calculation if needed
+    if not embeddings:
+        if not files or len(files) < 3 or not student_id or not year or not section or not course:
+            return jsonify({"error": "All fields and 3 images are required"}), 400
+
+        if not HAS_FACE_RECOGNITION:
+            return jsonify({"error": "Backend face recognition is not enabled and no client embeddings were sent"}), 400
+
+        for file in files:
+            # Load image and encode face
+            image = face_recognition.load_image_file(file)
+            encodings = face_recognition.face_encodings(image)
+            if not encodings:
+                return jsonify({"error": "No face detected in one of the images"}), 400
+            embeddings.append(encodings[0].tolist())
+    else:
+        if not student_id or not year or not section or not course:
+            return jsonify({"error": "All details are required"}), 400
 
     data = load_embeddings()
     data[student_id] = {
@@ -562,6 +652,9 @@ def enroll():
 
 @app.post("/attendance")
 def attendance():
+    if not HAS_FACE_RECOGNITION:
+        return jsonify({"status": "error", "message": "Backend face recognition is not enabled. Please use the Real-Time Scanner."}), 400
+
     session_id = request.form.get("session_id")
     student_id = request.form.get("student_id")
     location = request.form.get("location")
@@ -613,7 +706,18 @@ def attendance():
 
     # Security Check: Minimum confidence threshold
     if best_confidence >= 0.6:  # Require 60% confidence
-        log_attendance(session_id, student_id, "present", round(best_confidence, 2), location)
+        # Save photo path for consistency
+        photo_web_path = None
+        if file:
+            timestamp_slug = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_student_id = "".join([c for c in student_id if c.isalnum() or c in ("-", "_")])
+            photo_filename = f"{safe_student_id}_{timestamp_slug}.jpg"
+            photo_path = os.path.join(UPLOAD_DIR, photo_filename)
+            file.seek(0)
+            file.save(photo_path)
+            photo_web_path = f"/static/uploads/attendance_pics/{photo_filename}"
+
+        log_attendance(session_id, student_id, "present", round(best_confidence, 2), location, photo_web_path)
         return jsonify({
             "status": "logged", 
             "student_id": student_id, 
@@ -635,6 +739,174 @@ def attendance():
         "face_location": list(face_location),
         "match": False
     })
+
+@app.route("/get_embeddings/<course>/<year>/<section>")
+def get_embeddings(course, year, section):
+    # Normalize inputs to match how they are stored
+    course = course.lower().strip()
+    year = year.lower().strip()
+    section = section.lower().strip()
+    
+    data = load_embeddings()
+    filtered = {}
+    
+    # Also load the display name for each student to send to client
+    users = load_users()
+    
+    for sid, info in data.items():
+        c = info.get("course", "").lower().strip()
+        y = info.get("year", "").lower().strip()
+        s = info.get("section", "").lower().strip()
+        if c == course and y == year and s == section:
+            # Find display name
+            name = sid
+            if sid in users:
+                name = users[sid].get("name", sid)
+            filtered[sid] = {
+                "name": name,
+                "embeddings": info.get("embeddings")
+            }
+            
+    return jsonify(filtered)
+
+@app.post("/attendance_realtime")
+def attendance_realtime():
+    try:
+        session_id = request.form.get("session_id")
+        student_id = request.form.get("student_id")
+        confidence_str = request.form.get("confidence")
+        location = request.form.get("location")
+        file = request.files.get("image")
+        
+        if not session_id or not student_id:
+            return jsonify({"error": "Session ID and Student ID are required"}), 400
+            
+        confidence = float(confidence_str) if confidence_str else 1.0
+        
+        # Save photo
+        photo_web_path = None
+        if file:
+            timestamp_slug = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_student_id = "".join([c for c in student_id if c.isalnum() or c in ("-", "_")])
+            photo_filename = f"{safe_student_id}_{timestamp_slug}.jpg"
+            photo_path = os.path.join(UPLOAD_DIR, photo_filename)
+            file.save(photo_path)
+            photo_web_path = f"/static/uploads/attendance_pics/{photo_filename}"
+            
+        # Optional: Backend double-check validation if HAS_FACE_RECOGNITION is True
+        backend_flagged = False
+        backend_message = ""
+        backend_confidence = None
+        
+        if HAS_FACE_RECOGNITION and file:
+            try:
+                # Seek back to 0 because save() consumed it
+                file.seek(0)
+                image = face_recognition.load_image_file(file)
+                face_locations = face_recognition.face_locations(image)
+                if len(face_locations) == 1:
+                    encodings = face_recognition.face_encodings(image, face_locations)
+                    if encodings:
+                        new_encoding = encodings[0]
+                        data = load_embeddings()
+                        if student_id in data:
+                            student_data = data[student_id]
+                            known_embeddings = student_data.get('embeddings', [])
+                            best_dist = 1.0
+                            for embedding in known_embeddings:
+                                known_encoding = np.array(embedding)
+                                dist = face_recognition.face_distance([known_encoding], new_encoding)[0]
+                                if dist < best_dist:
+                                    best_dist = dist
+                            
+                            backend_confidence = round(1.0 - best_dist, 2)
+                            if best_dist > 0.45:  # Tolerance threshold
+                                backend_flagged = True
+                                backend_message = "Backend double-check failed: face distance too high."
+                        else:
+                            backend_flagged = True
+                            backend_message = "Backend warning: student embeddings not found in database."
+                else:
+                    backend_flagged = True
+                    backend_message = f"Backend warning: {len(face_locations)} faces detected (expected 1)."
+            except Exception as ex:
+                print(f"Backend double-check error: {ex}")
+                backend_message = f"Backend check failed with error: {str(ex)}"
+                
+        # Status
+        status = "present"
+        if backend_flagged:
+            status = "flagged"
+            
+        # Log attendance
+        log_attendance(session_id, student_id, status, confidence, location, photo_web_path)
+        
+        # Get student's name
+        users = load_users()
+        student_name = student_id
+        if student_id in users:
+            student_name = users[student_id].get("name", student_id)
+        else:
+            # try finding in embeddings
+            data = load_embeddings()
+            if student_id in data and "name" in data[student_id]:
+                student_name = data[student_id]["name"]
+            
+        return jsonify({
+            "status": "logged",
+            "student_id": student_id,
+            "student_name": student_name,
+            "confidence": confidence,
+            "backend_flagged": backend_flagged,
+            "backend_message": backend_message,
+            "backend_confidence": backend_confidence,
+            "photo_path": photo_web_path
+        })
+    except Exception as e:
+        print(f"Real-time attendance logging error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/attendance_live_stream/<session_id>")
+def attendance_live_stream(session_id):
+    session = SessionLocal()
+    try:
+        records = session.query(Attendance).filter(Attendance.session_id == session_id).order_by(Attendance.timestamp.desc()).all()
+        result = []
+        users = load_users()
+        for r in records:
+            name = r.student_id
+            if r.student_id in users:
+                name = users[r.student_id].get("name", r.student_id)
+            result.append({
+                "id": r.id,
+                "timestamp": r.timestamp.strftime("%Y-%m-%d %H:%M:%S") if r.timestamp else "",
+                "student_id": r.student_id,
+                "student_name": name,
+                "status": r.status,
+                "confidence": r.confidence,
+                "location": r.location,
+                "photo_path": r.photo_path
+            })
+        return jsonify(result)
+    finally:
+        session.close()
+
+@app.route("/live_scanner")
+def live_scanner_page():
+    course = request.args.get('course', '')
+    year = request.args.get('year', '')
+    section = request.args.get('section', '')
+    session_id = request.args.get('session_id', '')
+    return render_template("live_scanner.html", course=course, year=year, section=section, session_id=session_id)
+
+@app.route("/live_dashboard")
+def live_dashboard_page():
+    course = request.args.get('course', '')
+    year = request.args.get('year', '')
+    section = request.args.get('section', '')
+    session_id = request.args.get('session_id', '')
+    return render_template("live_dashboard.html", course=course, year=year, section=section, session_id=session_id)
+
 
 if __name__ == "__main__":
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")

@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Attendance Scanner</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .scanner-layout {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+        
+        .kiosk-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            position: relative;
+        }
+
+        .kiosk-hud {
+            position: relative;
+            width: 480px;
+            height: 360px;
+            border: 4px solid #667eea;
+            border-radius: 24px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+            background: #000;
+        }
+
+        @media (max-width: 768px) {
+            .scanner-layout {
+                grid-template-columns: 1fr;
+            }
+            .kiosk-hud {
+                width: 320px;
+                height: 240px;
+            }
+        }
+
+        .kiosk-video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror camera for natural kiosk experience */
+        }
+
+        .kiosk-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 4;
+            transform: scaleX(-1); /* Mirror canvas to align with mirrored video */
+        }
+
+        /* Success popups */
+        .success-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(46, 125, 50, 0.95); /* Deep green */
+            backdrop-filter: blur(8px);
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 20px;
+        }
+
+        .success-overlay.show {
+            opacity: 1;
+        }
+
+        .success-avatar {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            border: 4px solid white;
+            background-size: cover;
+            background-position: center;
+            margin-bottom: 15px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            display: none;
+        }
+
+        .success-icon {
+            font-size: 4rem;
+            margin-bottom: 15px;
+            animation: bounce 0.6s ease;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
+
+        /* Recent Checkins Side Panel */
+        .checkins-list {
+            max-height: 480px;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+
+        .checkin-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 12px 15px;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(102, 126, 234, 0.1);
+            border-radius: 14px;
+            margin-bottom: 10px;
+            animation: slideInLeft 0.4s ease forwards;
+        }
+
+        .checkin-thumb {
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            background-size: cover;
+            background-position: center;
+            border: 2px solid #667eea;
+            background-color: #ddd;
+        }
+
+        .checkin-info {
+            flex: 1;
+        }
+
+        .checkin-info h4 {
+            font-size: 0.95rem;
+            margin-bottom: 2px;
+            color: #333;
+        }
+
+        .checkin-info p {
+            font-size: 0.8rem;
+            color: #666;
+            margin: 0;
+        }
+
+        .checkin-time {
+            font-size: 0.75rem;
+            color: #999;
+            font-weight: 600;
+        }
+
+        @keyframes slideInLeft {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .session-info-badge {
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            color: #4c51bf;
+            font-size: 0.95rem;
+            font-weight: 700;
+            padding: 6px 16px;
+            border-radius: 20px;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" style="max-width: 1100px;">
+        <header>
+            <h1>Real-Time Biometric Terminal</h1>
+            <p>Classroom Kiosk Auto-Scanner</p>
+            <div style="margin-top: 15px;">
+                <span class="session-info-badge">🏫 Session: <span id="session-display">Loading...</span></span>
+                <span class="session-info-badge" style="background: rgba(46, 125, 50, 0.1); border-color: rgba(46, 125, 50, 0.3); color: #2e7d32;">
+                    👥 Loaded Enrolled: <span id="enrolled-count">0</span>
+                </span>
+            </div>
+        </header>
+
+        <div class="scanner-layout">
+            <!-- Left: Video Scan Kiosk -->
+            <div class="card kiosk-card">
+                <div class="kiosk-hud">
+                    <div class="laser-scanner" id="hud-laser"></div>
+                    <video id="kiosk-video" class="kiosk-video" autoplay playsinline muted></video>
+                    <canvas id="kiosk-canvas" class="kiosk-canvas"></canvas>
+                    
+                    <!-- Successful Scan Overlay -->
+                    <div class="success-overlay" id="success-overlay">
+                        <div class="success-icon" id="success-icon">🎉</div>
+                        <div class="success-avatar" id="success-avatar"></div>
+                        <h2 style="font-size: 2rem; margin-bottom: 8px; color: white;" id="success-title">Verified!</h2>
+                        <p style="font-size: 1.1rem; font-weight: 500; color: white;" id="success-message">Welcome to class.</p>
+                    </div>
+                </div>
+
+                <div id="scanner-status" style="margin-top: 20px; font-weight: 600;" class="status-info">
+                    ⏳ Connecting camera & loading recognition models...
+                </div>
+            </div>
+
+            <!-- Right: Live Attendance Feed -->
+            <div class="card">
+                <h2>📈 Recent Check-Ins</h2>
+                <div class="checkins-list" id="checkins-list">
+                    <div id="no-checkins" style="text-align: center; color: #999; padding: 40px 0;">
+                        No students scanned yet.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="text-align: center; margin-top: 20px;">
+            <a href="/" class="btn btn-secondary" style="margin: 0 10px;">🏠 Back to Home</a>
+            <button id="toggle-dashboard" class="btn" style="margin: 0 10px;">📊 Faculty Dashboard</button>
+        </div>
+    </div>
+
+    <!-- Load Vladmandic's face-api bundle containing TFJS -->
+    <script src="{{ url_for('static', filename='js/face-api.js') }}" onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js';"></script>
+    <script>
+        const course = "{{ course }}";
+        const year = "{{ year }}";
+        const section = "{{ section }}";
+        const sessionId = "{{ session_id }}";
+
+        document.getElementById('session-display').textContent = `${course.toUpperCase()} ${year}-${section} (${sessionId})`;
+        
+        const video = document.getElementById('kiosk-video');
+        const canvas = document.getElementById('kiosk-canvas');
+        const statusDiv = document.getElementById('scanner-status');
+        const countSpan = document.getElementById('enrolled-count');
+        const checkinsList = document.getElementById('checkins-list');
+        const successOverlay = document.getElementById('success-overlay');
+        const successAvatar = document.getElementById('success-avatar');
+        const successTitle = document.getElementById('success-title');
+        const successMsg = document.getElementById('success-message');
+
+        let knownStudents = {}; // student_id -> { name, descriptors: [Float32Array] }
+        let cooldownMap = new Map(); // student_id -> timestamp when cooldown ends
+        let isProcessing = false;
+        let localStream = null;
+        let modelsLoaded = false;
+        
+        // Setup sound chime synthesis (Web Audio API)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playChime(success = true) {
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                if (success) {
+                    // Two-tone success ding
+                    osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+                    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                    osc.start();
+                    osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.12); // E5
+                    gain.gain.setValueAtTime(0.1, audioCtx.currentTime + 0.12);
+                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+                    osc.stop(audioCtx.currentTime + 0.4);
+                } else {
+                    // Low warning buzz
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+                    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                    osc.start();
+                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+                    osc.stop(audioCtx.currentTime + 0.35);
+                }
+            } catch (e) {
+                console.warn("Audio Context blocked or failed:", e);
+            }
+        }
+
+        // Redirect to dashboard with class args
+        document.getElementById('toggle-dashboard').addEventListener('click', () => {
+            window.location.href = `/live_dashboard?course=${course}&year=${year}&section=${section}&session_id=${sessionId}`;
+        });
+
+        // Initialize Kiosk
+        async function init() {
+            try {
+                // Fetch student profiles & embeddings for this specific class
+                const response = await fetch(`/get_embeddings/${course}/${year}/${section}`);
+                const data = await response.json();
+                
+                let studentCount = 0;
+                for (const [sid, info] of Object.entries(data)) {
+                    knownStudents[sid] = {
+                        name: info.name,
+                        descriptors: info.embeddings.map(arr => new Float32Array(arr))
+                    };
+                    studentCount++;
+                }
+                
+                countSpan.textContent = studentCount;
+                if (studentCount === 0) {
+                    statusDiv.innerHTML = '<span class="status-warning">⚠️ No students registered for this class. Please enroll students first!</span>';
+                    return;
+                }
+
+                // Load face-api models
+                statusDiv.textContent = "⚙️ Loading AI face recognition models...";
+                try {
+                    // Try local models first
+                    await Promise.all([
+                        faceapi.nets.tinyFaceDetector.loadFromUri('/static/models'),
+                        faceapi.nets.faceLandmark68Net.loadFromUri('/static/models'),
+                        faceapi.nets.faceRecognitionNet.loadFromUri('/static/models')
+                    ]);
+                    modelsLoaded = true;
+                    console.log("Loaded face-api models locally");
+                } catch (localErr) {
+                    console.warn("Local model loading failed, trying CDN...", localErr);
+                    try {
+                        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+                        await Promise.all([
+                            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                        ]);
+                        modelsLoaded = true;
+                        console.log("Loaded face-api models from CDN");
+                    } catch (cdnErr) {
+                        console.error("All model loading attempts failed:", cdnErr);
+                        statusDiv.innerHTML = '<span class="status-danger">❌ Model loading failed. Check server/internet connection.</span>';
+                        return;
+                    }
+                }
+                statusDiv.textContent = "🎥 Connecting to camera feed...";
+                
+                // Connect Webcam
+                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                    statusDiv.innerHTML = '<span class="status-danger">🚫 Webcam Blocked: Secure Context required (HTTPS or localhost). Access at http://127.0.0.1:5000/ or configure SSL.</span>';
+                    return;
+                }
+
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+                    });
+                } catch (webcamErr) {
+                    console.warn("Retrying webcam with default constraints due to: ", webcamErr);
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true });
+                }
+                
+                video.srcObject = localStream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    statusDiv.innerHTML = '<span class="status-success">✓ Kiosk Active - Scan Face</span>';
+                    startScanning();
+                };
+            } catch (err) {
+                console.error("Initialization failed:", err);
+                statusDiv.innerHTML = `<span class="status-danger">❌ Initialization failed: ${err.message}</span>`;
+            }
+        }
+
+        // Continuous Loop
+        async function startScanning() {
+            if (!modelsLoaded || isProcessing) return;
+            
+            // Adjust canvas size
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+
+            async function scanFrame() {
+                if (video.paused || video.ended) {
+                    requestAnimationFrame(scanFrame);
+                    return;
+                }
+
+                try {
+                    // Quick Face Detection & landmarks
+                    const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+                        .withFaceLandmarks()
+                        .withFaceDescriptor();
+
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                    if (detection) {
+                        const descriptor = detection.descriptor;
+                        const box = detection.detection.box;
+
+                        // Find closest student match
+                        let bestMatch = { studentId: null, name: null, distance: 1.0 };
+                        
+                        for (const [sid, student] of Object.entries(knownStudents)) {
+                            for (const knownDesc of student.descriptors) {
+                                const dist = faceapi.euclideanDistance(descriptor, knownDesc);
+                                if (dist < bestMatch.distance) {
+                                    bestMatch = { studentId: sid, name: student.name, distance: dist };
+                                }
+                            }
+                        }
+
+                        // Tolerance distance threshold <= 0.45 for a strong match
+                        const MATCH_THRESHOLD = 0.45;
+                        const matched = bestMatch.distance <= MATCH_THRESHOLD;
+                        const confidence = 1.0 - bestMatch.distance;
+
+                        let boxColor = '#667eea'; // Idle blue
+                        if (matched) {
+                            boxColor = '#2e7d32'; // Successful Green
+                            
+                            // Check cooldown to avoid double trigger
+                            const now = Date.now();
+                            const cooldownEnd = cooldownMap.get(bestMatch.studentId) || 0;
+                            
+                            if (now > cooldownEnd && !isProcessing) {
+                                isProcessing = true;
+                                cooldownMap.set(bestMatch.studentId, now + 15000); // 15-second block
+                                handleMatch(bestMatch.studentId, bestMatch.name, confidence);
+                            }
+                        } else {
+                            if (bestMatch.distance < 0.65) {
+                                boxColor = '#d97706'; // Processing/Warning Amber
+                            }
+                        }
+
+                        // Draw bounding box mirrored
+                        ctx.strokeStyle = boxColor;
+                        ctx.lineWidth = 4;
+                        ctx.lineJoin = 'round';
+                        ctx.shadowBlur = 8;
+                        ctx.shadowColor = boxColor;
+                        
+                        // Rounded rectangle drawing
+                        const x = box.x;
+                        const y = box.y;
+                        const w = box.width;
+                        const h = box.height;
+                        const r = 16;
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(x + r, y);
+                        ctx.arcTo(x + w, y, x + w, y + h, r);
+                        ctx.arcTo(x + w, y + h, x, y + h, r);
+                        ctx.arcTo(x, y + h, x, y, r);
+                        ctx.arcTo(x, y, x + w, y, r);
+                        ctx.closePath();
+                        ctx.stroke();
+                        
+                        ctx.shadowBlur = 0; // Reset
+                        
+                        // Text tag
+                        ctx.fillStyle = boxColor;
+                        ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto';
+                        const text = matched ? bestMatch.name : "Aligning Face...";
+                        ctx.fillText(text, x + 5, y - 10);
+                    }
+                } catch (e) {
+                    console.error("Frame scanning exception:", e);
+                }
+
+                // Poll next frame
+                setTimeout(scanFrame, 150);
+            }
+
+            scanFrame();
+        }
+
+        // Handle Match: Lock and Submit to database
+        async function handleMatch(studentId, name, confidence) {
+            playChime(true);
+            
+            // Show HUD Success Display
+            successTitle.textContent = "Verified!";
+            successMsg.textContent = `${name} (${studentId}) logged.`;
+            successAvatar.style.display = 'none';
+            successOverlay.classList.add('show');
+
+            // Draw current frame to offscreen canvas to send as audit image
+            const captureCanvas = document.createElement('canvas');
+            captureCanvas.width = 320;
+            captureCanvas.height = 240;
+            const captureCtx = captureCanvas.getContext('2d');
+            
+            // Draw mirrored image to match natural audit view
+            captureCtx.translate(320, 0);
+            captureCtx.scale(-1, 1);
+            captureCtx.drawImage(video, 0, 0, 320, 240);
+            captureCtx.setTransform(1, 0, 0, 1, 0, 0); // Reset
+
+            captureCanvas.toBlob(async (blob) => {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('student_id', studentId);
+                formData.append('confidence', confidence.toFixed(2));
+                formData.append('location', 'classroom_kiosk');
+                formData.append('image', blob, 'audit.jpg');
+
+                try {
+                    const response = await fetch('/attendance_realtime', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const resData = await response.json();
+                    
+                    if (resData.status === 'logged') {
+                        // Append to recent checked ins list
+                        addCheckinToList(studentId, name, resData.photo_path);
+                    } else {
+                        console.error("Attendance submission error:", resData.error);
+                    }
+                } catch (err) {
+                    console.error("Failed to post attendance:", err);
+                }
+                
+                // Hide overlay after 3.5 seconds and resume scanning
+                setTimeout(() => {
+                    successOverlay.classList.remove('show');
+                    isProcessing = false;
+                }, 3500);
+            }, 'image/jpeg');
+        }
+
+        // Add check-in item to HTML sidebar list
+        function addCheckinToList(studentId, name, photoPath) {
+            const noCheckins = document.getElementById('no-checkins');
+            if (noCheckins) noCheckins.remove();
+
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            
+            const item = document.createElement('div');
+            item.className = 'checkin-item';
+            
+            const thumbStyle = photoPath ? `background-image: url('${photoPath}');` : '';
+            
+            item.innerHTML = `
+                <div class="checkin-thumb" style="${thumbStyle}"></div>
+                <div class="checkin-info">
+                    <h4>${name}</h4>
+                    <p>ID: ${studentId}</p>
+                </div>
+                <div class="checkin-time">${timeStr}</div>
+            `;
+            
+            // Insert at the top of the list
+            checkinsList.insertBefore(item, checkinsList.firstChild);
+        }
+
+        // Run
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>

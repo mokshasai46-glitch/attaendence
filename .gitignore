@@ -136,6 +136,7 @@ attendance.db
 embeddings.json
 users.json
 *.log
+static/uploads/
 
 # IDE
 .vscode/

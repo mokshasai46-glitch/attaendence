@@ -20,13 +20,61 @@
         <div class="card">
             <h2>🚀 Quick Actions</h2>
             <div class="quick-actions">
-                <a href="/login" class="btn">🔐 Faculty Login</a>
+                {% if 'user' in session %}
+                    <a href="/enroll_page" class="btn">🚀 Register Students</a>
+                    <a href="/logout" class="btn btn-danger">🚪 Faculty Logout</a>
+                {% else %}
+                    <a href="/login" class="btn">🔐 Faculty Login</a>
+                {% endif %}
                 <a href="/view_attendance" class="btn">📊 View Records</a>
                 {% if session.role == 'admin' %}
                     <a href="/manage_users" class="btn">🛠 Manage Users</a>
                 {% endif %}
             </div>
         </div>
+
+        {% if 'user' in session %}
+        <!-- Live Session Controls (Faculty Only) -->
+        <div class="card">
+            <h2>📹 Start Live Attendance Session</h2>
+            <p style="margin-bottom: 20px; color: #666; font-size: 0.95rem;">Set up a continuous kiosk scanner at the classroom door and watch live check-ins on your dashboard.</p>
+            
+            <div class="filter-grid" style="margin-bottom: 20px;">
+                <div class="form-group" style="margin: 0;">
+                    <label for="live_course">Department / Course:</label>
+                    <select id="live_course">
+                        <option value="cse">CSE</option>
+                        <option value="cse aimi">CSE AIMI</option>
+                        <option value="cse aids">CSE AIDS</option>
+                        <option value="cse cs">CSE CS</option>
+                        <option value="cst">CST</option>
+                        <option value="ece">ECE</option>
+                        <option value="eee">EEE</option>
+                        <option value="mechanical">Mechanical</option>
+                        <option value="others">Others</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin: 0;">
+                    <label for="live_year">Academic Year:</label>
+                    <input type="text" id="live_year" placeholder="e.g. 3rd" value="3rd">
+                </div>
+                <div class="form-group" style="margin: 0;">
+                    <label for="live_section">Section:</label>
+                    <input type="text" id="live_section" placeholder="e.g. A" value="A">
+                </div>
+                <div class="form-group" style="margin: 0;">
+                    <label for="live_session_id">Session / Class ID:</label>
+                    <input type="text" id="live_session_id" placeholder="e.g. CSE-3A-CS101" required>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+                <button onclick="launchLiveScanner()" class="btn" style="background: linear-gradient(135deg, #111827 0%, #374151 100%); flex: 1; min-width: 220px;">📹 Launch Kiosk Scanner</button>
+                <button onclick="launchLiveDashboard()" class="btn" style="flex: 1; min-width: 220px;">📊 Launch Live Dashboard</button>
+            </div>
+        </div>
+        {% endif %}
+
 
         <!-- Attendance Form -->
         <div class="card">
@@ -70,7 +118,7 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/face-api.min.js"></script>
+    <script src="{{ url_for('static', filename='js/face-api.js') }}" onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js';"></script>
     <script>
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
@@ -90,17 +138,31 @@
 
         async function loadModels() {
             try {
+                // Try local first
                 await Promise.all([
                     faceapi.nets.tinyFaceDetector.loadFromUri('/static/models'),
                     faceapi.nets.faceLandmark68Net.loadFromUri('/static/models'),
                     faceapi.nets.faceRecognitionNet.loadFromUri('/static/models')
                 ]);
                 modelsLoaded = true;
-                console.log('Face detection models loaded');
-            } catch (err) {
-                console.error('Error loading models:', err);
+                console.log('Face detection models loaded locally');
+            } catch (localErr) {
+                console.warn('Local models failed to load, falling back to CDN:', localErr);
+                try {
+                    const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+                    await Promise.all([
+                        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                    ]);
+                    modelsLoaded = true;
+                    console.log('Face detection models loaded from CDN');
+                } catch (cdnErr) {
+                    console.error('All model loading attempts failed:', cdnErr);
+                }
             }
         }
+
 
         // Draw soft, smooth rounded rectangular tracking boundaries on face
         function drawFaceBox(faceLocation, state = 'white', confidence = null) {
@@ -240,19 +302,30 @@
                 });
         });
         
-        navigator.mediaDevices.getUserMedia({ video: true })
-            .then(mediaStream => {
-                stream = mediaStream;
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    startFaceDetection();
-                };
-            })
-            .catch(err => {
-                console.error('Error accessing webcam:', err);
+        function connectWebcam() {
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
                 resultDiv.style.display = 'block';
-                resultDiv.innerHTML = '<p class="status-danger">❌ Webcam connection failed. Please grant permission access.</p>';
-            });
+                resultDiv.innerHTML = '<p class="status-danger">🚫 Webcam Blocked: Modern web browsers strictly restrict webcam access to Secure Contexts (HTTPS or localhost). Please run locally at http://127.0.0.1:5000/ or configure an SSL certificate (HTTPS) on your deployment server.</p>';
+                return;
+            }
+            
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(mediaStream => {
+                    stream = mediaStream;
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        startFaceDetection();
+                    };
+                })
+                .catch(err => {
+                    console.error('Error accessing webcam:', err);
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = '<p class="status-danger">❌ Webcam connection failed. Please grant camera permission in your browser settings or verify your webcam hardware is active.</p>';
+                });
+        }
+        
+        connectWebcam();
+
 
         window.addEventListener('load', loadModels);
 
@@ -363,6 +436,47 @@
                 });
             }, 'image/jpeg');
         });
+        
+        // Generate a random class session ID if empty
+        window.addEventListener('DOMContentLoaded', () => {
+            const sessInput = document.getElementById('live_session_id');
+            if (sessInput) {
+                const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+                const randHex = Math.floor(Math.random()*16777215).toString(16).substring(0, 4).toUpperCase();
+                sessInput.value = `SESS_${dateStr}_${randHex}`;
+            }
+        });
+
+        function getLiveParams() {
+            const courseInput = document.getElementById('live_course');
+            const yearInput = document.getElementById('live_year');
+            const sectionInput = document.getElementById('live_section');
+            const sessionInput = document.getElementById('live_session_id');
+            
+            if (!sessionInput) return null;
+            
+            const course = courseInput.value.trim();
+            const year = yearInput.value.trim();
+            const section = sectionInput.value.trim();
+            const session_id = sessionInput.value.trim();
+            
+            if (!session_id) {
+                alert("Please enter a Session ID first.");
+                return null;
+            }
+            return `course=${encodeURIComponent(course)}&year=${encodeURIComponent(year)}&section=${encodeURIComponent(section)}&session_id=${encodeURIComponent(session_id)}`;
+        }
+
+        function launchLiveScanner() {
+            const params = getLiveParams();
+            if (params) window.location.href = `/live_scanner?${params}`;
+        }
+
+        function launchLiveDashboard() {
+            const params = getLiveParams();
+            if (params) window.location.href = `/live_dashboard?${params}`;
+        }
     </script>
+
 </body>
 </html>

@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Attendance Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* Stats Cards Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid rgba(102, 126, 234, 0.15);
+            border-radius: 18px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+            position: relative;
+        }
+
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: #4c51bf;
+            margin-bottom: 5px;
+            line-height: 1;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Lightbox modal for audit photo review */
+        .lightbox {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(10px);
+        }
+
+        .lightbox-content {
+            position: relative;
+            max-width: 90%;
+            max-height: 80%;
+            border-radius: 16px;
+            border: 4px solid white;
+            overflow: hidden;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.5);
+            background: #222;
+        }
+
+        .lightbox-content img {
+            display: block;
+            width: auto;
+            height: auto;
+            max-width: 640px;
+            max-height: 480px;
+        }
+
+        @media (max-width: 640px) {
+            .lightbox-content img {
+                max-width: 100%;
+                max-height: 320px;
+            }
+        }
+
+        .lightbox-close {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            color: white;
+            font-size: 2.2rem;
+            font-weight: bold;
+            cursor: pointer;
+            text-shadow: 0 2px 5px rgba(0,0,0,0.5);
+            z-index: 101;
+        }
+
+        /* Table audit image style */
+        .audit-thumbnail {
+            width: 50px;
+            height: 40px;
+            border-radius: 8px;
+            background-size: cover;
+            background-position: center;
+            border: 2px solid #e2e8f0;
+            cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s;
+            display: inline-block;
+            vertical-align: middle;
+            background-color: #eee;
+        }
+
+        .audit-thumbnail:hover {
+            transform: scale(1.1);
+            border-color: #667eea;
+        }
+
+        /* Badges for status */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .badge-verified {
+            background: rgba(46, 125, 50, 0.1);
+            color: #2e7d32;
+            border: 1px solid rgba(46, 125, 50, 0.2);
+        }
+
+        .badge-flagged {
+            background: rgba(220, 38, 38, 0.1);
+            color: #dc2626;
+            border: 1px solid rgba(220, 38, 38, 0.25);
+            animation: blinker 1.5s linear infinite;
+        }
+
+        @keyframes blinker {
+            50% { opacity: 0.6; }
+        }
+
+        .class-header-card {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid rgba(102, 126, 234, 0.15);
+            border-radius: 24px;
+            padding: 25px 35px;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 20px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+        }
+
+        .class-meta h2 {
+            font-size: 1.6rem;
+            margin-bottom: 5px;
+            color: #333;
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .class-meta p {
+            color: #666;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" style="max-width: 1000px;">
+        <header>
+            <h1>Live Attendance Monitor</h1>
+            <p>Real-Time Course Stream Analytics</p>
+        </header>
+
+        <!-- Class Info Header -->
+        <div class="class-header-card">
+            <div class="class-meta">
+                <h2 id="class-title">Loading Class Info...</h2>
+                <p>Session ID: <span id="session-id-display" style="font-weight: 700; color: #4c51bf;">...</span></p>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button id="toggle-scanner" class="btn">📹 Open Kiosk Terminal</button>
+                <a href="/view_attendance" class="btn btn-secondary" style="margin: 0;">📊 Historical Records</a>
+            </div>
+        </div>
+
+        <!-- Attendance Stats Row -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="stat-enrolled">-</div>
+                <div class="stat-label">Total Enrolled</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="stat-present">-</div>
+                <div class="stat-label">Present Today</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="stat-absent">-</div>
+                <div class="stat-label">Absentees</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="stat-rate">0%</div>
+                <div class="stat-label">Attendance Rate</div>
+                <div class="stat-bar" style="margin-top: 10px; height: 6px;">
+                    <div id="stat-rate-bar" class="stat-fill" style="width: 0%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Real-Time Log Grid -->
+        <div class="card">
+            <h2>⏱ Live Log <span style="font-size: 0.8rem; font-weight: 600; color: #4c51bf; margin-left: 10px; padding: 4px 10px; background: rgba(102,126,234,0.1); border-radius: 12px;">🔴 LIVE STREAMING</span></h2>
+            
+            <table id="attendance-table">
+                <thead>
+                    <tr>
+                        <th>Audit Image</th>
+                        <th>Student ID</th>
+                        <th>Student Name</th>
+                        <th>Time Marked</th>
+                        <th>Confidence</th>
+                        <th>Scan Location</th>
+                        <th>Verification</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                    <tr>
+                        <td colspan="7" style="text-align: center; color: #999; padding: 40px 0;">
+                            Waiting for check-ins...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card" style="text-align: center;">
+            <a href="/" class="btn btn-secondary" style="width: 100%; margin: 0;">🏠 Back to Home</a>
+        </div>
+    </div>
+
+    <!-- Lightbox for Image Zoom -->
+    <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+        <span class="lightbox-close">&times;</span>
+        <div class="lightbox-content" onclick="event.stopPropagation()">
+            <img src="" id="lightbox-img" alt="Enlarged Audit Snap">
+        </div>
+    </div>
+
+    <script>
+        const course = "{{ course }}";
+        const year = "{{ year }}";
+        const section = "{{ section }}";
+        const sessionId = "{{ session_id }}";
+
+        document.getElementById('class-title').textContent = `${course.toUpperCase()} - Section ${section} (${year} Year)`;
+        document.getElementById('session-id-display').textContent = sessionId;
+
+        document.getElementById('toggle-scanner').addEventListener('click', () => {
+            window.location.href = `/live_scanner?course=${course}&year=${year}&section=${section}&session_id=${sessionId}`;
+        });
+
+        const tableBody = document.getElementById('table-body');
+        const enrolledNum = document.getElementById('stat-enrolled');
+        const presentNum = document.getElementById('stat-present');
+        const absentNum = document.getElementById('stat-absent');
+        const ratePct = document.getElementById('stat-rate');
+        const rateBar = document.getElementById('stat-rate-bar');
+
+        let totalEnrolled = 0;
+        let loggedStudentIds = new Set();
+
+        // 1. Fetch Enrolled count
+        async function fetchEnrolledCount() {
+            try {
+                const response = await fetch(`/get_embeddings/${course}/${year}/${section}`);
+                const data = await response.json();
+                totalEnrolled = Object.keys(data).length;
+                enrolledNum.textContent = totalEnrolled;
+                updateStats();
+            } catch (err) {
+                console.error("Error fetching enrolled class size:", err);
+            }
+        }
+
+        // 2. Poll live attendance
+        async function pollAttendance() {
+            try {
+                const response = await fetch(`/attendance_live_stream/${sessionId}`);
+                const records = await response.json();
+                
+                if (records.length === 0) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="7" style="text-align: center; color: #999; padding: 40px 0;">
+                                No students checked in yet today.
+                            </td>
+                        </tr>
+                    `;
+                    loggedStudentIds.clear();
+                    updateStats();
+                    return;
+                }
+
+                loggedStudentIds.clear();
+                
+                let rowsHtml = '';
+                records.forEach(r => {
+                    loggedStudentIds.add(r.student_id);
+                    
+                    const thumbStyle = r.photo_path ? `background-image: url('${r.photo_path}');` : '';
+                    const thumbElement = r.photo_path 
+                        ? `<div class="audit-thumbnail" style="${thumbStyle}" onclick="openLightbox('${r.photo_path}')"></div>`
+                        : `<div style="font-size: 0.75rem; color:#aaa; font-weight:600;">No photo</div>`;
+
+                    const confidenceText = r.confidence ? `${Math.round(r.confidence * 100)}%` : 'N/A';
+                    
+                    const isFlagged = r.status === 'flagged';
+                    const badgeClass = isFlagged ? 'badge-flagged' : 'badge-verified';
+                    const badgeText = isFlagged ? '⚠️ Flagged' : '✓ Verified';
+                    const statusBadge = `<span class="status-badge ${badgeClass}">${badgeText}</span>`;
+
+                    rowsHtml += `
+                        <tr>
+                            <td style="text-align: center;">${thumbElement}</td>
+                            <td><strong>${r.student_id}</strong></td>
+                            <td>${r.student_name}</td>
+                            <td>${r.timestamp.split(' ')[1] || r.timestamp}</td>
+                            <td>${confidenceText}</td>
+                            <td style="font-size: 0.85rem; font-weight:600; color:#555;">${r.location || 'Terminal'}</td>
+                            <td>${statusBadge}</td>
+                        </tr>
+                    `;
+                });
+
+                tableBody.innerHTML = rowsHtml;
+                updateStats();
+
+            } catch (err) {
+                console.error("Failed polling real-time stream:", err);
+            }
+        }
+
+        function updateStats() {
+            const presentCount = loggedStudentIds.size;
+            presentNum.textContent = presentCount;
+            
+            if (totalEnrolled > 0) {
+                const absentCount = Math.max(0, totalEnrolled - presentCount);
+                absentNum.textContent = absentCount;
+                
+                const rate = Math.round((presentCount / totalEnrolled) * 100);
+                ratePct.textContent = `${rate}%`;
+                rateBar.style.width = `${rate}%`;
+            } else {
+                absentNum.textContent = '-';
+                ratePct.textContent = '0%';
+                rateBar.style.width = '0%';
+            }
+        }
+
+        // Image Lightbox actions
+        const lightbox = document.getElementById('lightbox');
+        const lightboxImg = document.getElementById('lightbox-img');
+
+        function openLightbox(src) {
+            lightboxImg.src = src;
+            lightbox.style.display = 'flex';
+        }
+
+        function closeLightbox() {
+            lightbox.style.display = 'none';
+        }
+
+        // Run
+        window.addEventListener('load', async () => {
+            await fetchEnrolledCount();
+            await pollAttendance();
+            // Poll every 2 seconds
+            setInterval(pollAttendance, 2000);
+        });
+    </script>
+</body>
+</html>
